@@ -911,6 +911,11 @@ typedef struct tls_state {
 	struct tls_aes aes_encrypt;
 	struct tls_aes aes_decrypt;
 	uint8_t H[16]; //used by AES_GCM
+
+#if ENABLE_SSL_SERVER // || ENABLE_FEATURE_HTTPD_SSL
+	const char *privkey_in_der_format;
+	const char *cert_in_der_format;
+#endif
 } tls_state_t;
 
 static inline tls_state_t *new_tls_state(void)
@@ -918,7 +923,10 @@ static inline tls_state_t *new_tls_state(void)
 	tls_state_t *tls = xzalloc(sizeof(*tls));
 	return tls;
 }
-void tls_handshake(tls_state_t *tls, const char *sni) FAST_FUNC;
+void FAST_FUNC tls_handshake(tls_state_t *tls, const char *sni);
+void FAST_FUNC tls_handshake_as_server(tls_state_t *tls,
+	const char *privkey_der_filename,
+	const char *cert_der_filename);
 #define TLSLOOP_EXIT_ON_LOCAL_EOF (1 << 0)
 void tls_run_copy_loop(tls_state_t *tls, unsigned flags) FAST_FUNC;
 

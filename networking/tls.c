@@ -2323,6 +2323,7 @@ void FAST_FUNC tls_run_copy_loop(tls_state_t *tls, unsigned flags)
 				tls_free_outbuf(tls); /* mem usage optimization */
 				if (flags & TLSLOOP_EXIT_ON_LOCAL_EOF)
 					break;
+					//TODO: if (pfds[1].revents) network has data, do a last read from it before exiting.
 			} else {
 				if (nread == inbuf_size) {
 					/* TLS has per record overhead, if input comes fast,
@@ -2332,6 +2333,11 @@ void FAST_FUNC tls_run_copy_loop(tls_state_t *tls, unsigned flags)
 					if (inbuf_size > TLS_MAX_OUTBUF)
 						inbuf_size = TLS_MAX_OUTBUF;
 				}
+//BUG: in this example: printf '\n' | ssl_client -e ssl_server -OPTS echo 'Hi'
+//if ssl_client arrives here (if it sees stdin before it sees the server's "Hi" message),
+//it can be killed by SIGPIPE because server has already exited.
+//(If we disable SIGPIPE, it would die on write error).
+//Which means it won't get and won't print to stdout the server's response!
 				tls_xwrite(tls, nread);
 			}
 		}
@@ -2360,3 +2366,16 @@ void FAST_FUNC tls_run_copy_loop(tls_state_t *tls, unsigned flags)
 		}
 	}
 }
+
+#if ENABLE_SSL_SERVER // || ENABLE_FEATURE_HTTPD_SSL
+
+/* =============== SERVER-SIDE CODE =============== */
+
+void FAST_FUNC tls_handshake_as_server(tls_state_t *tls,
+	const char *privkey_der_filename,
+	const char *cert_der_filename)
+{
+//TODO
+	exit(1 | !tls | !privkey_der_filename | !cert_der_filename);
+}
+#endif
