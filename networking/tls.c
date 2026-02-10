@@ -244,7 +244,6 @@ enum {
 	GOT_EC_KEY             = 1 << 3,
 	GOT_EC_CURVE_X25519    = 1 << 4, // else P256
 	ENCRYPTION_AESGCM      = 1 << 5, // else AES-SHA (or NULL-SHA if ALLOW_RSA_NULL_SHA256=1)
-	ENCRYPT_ON_WRITE       = 1 << 6,
 };
 
 struct record_hdr {
@@ -819,17 +818,11 @@ static void xwrite_handshake_record(tls_state_t *tls, unsigned size)
 
 static void xwrite_and_update_handshake_hash(tls_state_t *tls, unsigned size)
 {
-	if (!(tls->flags & ENCRYPT_ON_WRITE)) {
-//always true!
-		uint8_t *buf;
-
-		xwrite_handshake_record(tls, size);
-		/* Handshake hash does not include record headers */
-		buf = tls->outbuf + OUTBUF_PFX;
-		hash_handshake(tls, ">> hash:%s", buf, size);
-		return;
-	}
-	xwrite_encrypted(tls, size, RECORD_TYPE_HANDSHAKE);
+	uint8_t *buf;
+	xwrite_handshake_record(tls, size);
+	/* Handshake hash does not include record headers */
+	buf = tls->outbuf + OUTBUF_PFX;
+	hash_handshake(tls, ">> hash:%s", buf, size);
 }
 
 static int tls_has_buffered_record(tls_state_t *tls)
@@ -1401,6 +1394,13 @@ static ALWAYS_INLINE void fill_handshake_record_hdr(void *buf, unsigned type, un
 	h->len24_lo  = len & 0xff;
 }
 
+static void *get_outbuf_fill_handshake_record(tls_state_t *tls, unsigned type, unsigned len)
+{
+	void *record = tls_get_zeroed_outbuf(tls, len);
+	fill_handshake_record_hdr(record, type, len);
+	return record;
+}
+
 static void send_client_hello_and_alloc_hsd(tls_state_t *tls, const char *sni)
 {
 #define NUM_CIPHERS (0 \
@@ -1547,9 +1547,8 @@ static void send_client_hello_and_alloc_hsd(tls_state_t *tls, const char *sni)
 
 	/* +2 is for "len of all extensions" 2-byte field */
 	len = sizeof(*record) + 2 + ext_len;
-	record = tls_get_zeroed_outbuf(tls, len);
+	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_CLIENT_HELLO, len);
 
-	fill_handshake_record_hdr(record, HANDSHAKE_CLIENT_HELLO, len);
 	record->proto_maj = TLS_MAJ;	/* the "requested" version of the protocol, */
 	record->proto_min = TLS_MIN;	/* can be higher than one in record headers */
 	tls_get_random(record->rand32, sizeof(record->rand32));
@@ -1861,15 +1860,7 @@ static void send_empty_client_cert(tls_state_t *tls)
 	};
 	struct client_empty_cert *record;
 
-	record = tls_get_zeroed_outbuf(tls, sizeof(*record));
-	//fill_handshake_record_hdr(record, HANDSHAKE_CERTIFICATE, sizeof(*record));
-	//record->cert_chain_len24_hi = 0;
-	//record->cert_chain_len24_mid = 0;
-	//record->cert_chain_len24_lo = 0;
-	// same as above:
-	record->type = HANDSHAKE_CERTIFICATE;
-	record->len24_lo = 3;
-
+	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_CERTIFICATE, sizeof(*record));
 	dbg(">> CERTIFICATE");
 	xwrite_and_update_handshake_hash(tls, sizeof(*record));
 }
@@ -1968,10 +1959,12 @@ static void send_client_key_exchange(tls_state_t *tls)
 		uint8_t key[2 + 4 * 1024]; // size??
 	};
 //FIXME: better size estimate
-	struct client_key_exchange *record = tls_get_zeroed_outbuf(tls, sizeof(*record));
+	struct client_key_exchange *record;
 	uint8_t premaster[RSA_PREMASTER_SIZE > EC_CURVE_KEYSIZE ? RSA_PREMASTER_SIZE : EC_CURVE_KEYSIZE];
 	int premaster_size;
 	int len;
+
+	record = tls_get_zeroed_outbuf(tls, sizeof(*record));
 
 	if (!(tls->flags & NEED_EC_KEY)) {
 		/* RSA */
@@ -2105,11 +2098,11 @@ static void send_finished(tls_state_t *tls, const char *msg_to_encrypt)
 		uint8_t len24_hi, len24_mid, len24_lo;
 		uint8_t prf_result[12];
 	};
-	struct finished *record = tls_get_outbuf(tls, sizeof(*record));
+	struct finished *record;
 	uint8_t handshake_hash[TLS_MAX_MAC_SIZE];
 	unsigned len;
 
-	fill_handshake_record_hdr(record, HANDSHAKE_FINISHED, sizeof(*record));
+	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_FINISHED, sizeof(*record));
 
 	len = sha_end(&tls->hsd->handshake_hash_ctx, handshake_hash);
 
@@ -2260,10 +2253,8 @@ void FAST_FUNC tls_handshake(tls_state_t *tls, const char *sni)
 	send_client_key_exchange(tls);
 
 	send_change_cipher_spec(tls);
+
 	/* from now on we should send encrypted */
-	/* tls->write_seq64_be = 0; - already is */
-	tls->flags |= ENCRYPT_ON_WRITE;
-//TODO: ENCRYPT_ON_WRITE is unused, remove
 
 	send_finished(tls, "client finished");
 
@@ -2505,9 +2496,7 @@ static void send_server_hello(tls_state_t *tls)
 	};
 	struct server_hello *record;
 
-	record = tls_get_zeroed_outbuf(tls, sizeof(*record));
-
-	fill_handshake_record_hdr(record, HANDSHAKE_SERVER_HELLO, sizeof(*record));
+	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_SERVER_HELLO, sizeof(*record));
 
 	record->proto_maj = TLS_MAJ;
 	record->proto_min = TLS_MIN;
@@ -2556,8 +2545,7 @@ static void send_server_certificate(tls_state_t *tls)
 	cert_len = tls->hsd->server_cert_der_len;
 	total_len = sizeof(*record) + cert_len;
 
-	record = tls_get_zeroed_outbuf(tls, total_len);
-	fill_handshake_record_hdr(record, HANDSHAKE_CERTIFICATE, total_len);
+	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_CERTIFICATE, total_len);
 
 	/* Certificate chain length (just one cert for now) */
 	chain_len = cert_len + 3; /* 3 bytes for cert length */
@@ -2585,9 +2573,7 @@ static void send_server_hello_done(tls_state_t *tls)
 	};
 	struct server_hello_done *record;
 
-	record = tls_get_zeroed_outbuf(tls, sizeof(*record));
-	record->type = HANDSHAKE_SERVER_HELLO_DONE;
-	/* length is 0 */
+	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_SERVER_HELLO_DONE, sizeof(*record));
 
 	dbg(">> SERVER_HELLO_DONE");
 	xwrite_and_update_handshake_hash(tls, sizeof(*record));
