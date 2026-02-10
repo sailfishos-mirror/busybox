@@ -90,8 +90,7 @@ int ssl_server_main(int argc UNUSED_PARAM, char **argv)
 	/* tls_run_copy_loop() needs non-TLS fds on STDIN and STDOUT */
 	xmove_fd(from_prog.rd, STDIN_FILENO);
 	xmove_fd(to_prog.wr, STDOUT_FILENO);
-	tls_run_copy_loop(tls, /*flags*/ 0
-//flags????
-);
+	tls_run_copy_loop(tls, /*flags*/ TLSLOOP_EXIT_ON_LOCAL_EOF);
+
 	return EXIT_SUCCESS;
 }

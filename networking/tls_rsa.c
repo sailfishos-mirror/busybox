@@ -211,3 +211,104 @@ int32 FAST_FUNC psRsaEncryptPub(psPool_t *pool, psRsaKey_t *key,
 	}
 	return size;
 }
+
+/* Remove PKCS#1 padding (Type 2) from decrypted data
+ * Format: 00 || 02 || PS || 00 || M
+ * Returns length of unpadded message, or negative on error
+ */
+#define pkcs1Unpad(in, inlen, out, outlen) \
+        pkcs1Unpad(in, inlen, out, outlen)
+static //bbox
+int32 pkcs1Unpad(unsigned char *in, uint32 inlen, unsigned char *out,
+			uint32 outlen)
+{
+	unsigned char *c, *end;
+	uint32 msglen;
+
+	if (inlen < 11) {  /* Minimum: 00 02 [8 bytes PS] 00 */
+		psTraceCrypto("pkcs1Unpad: input too short\n");
+		return PS_FAILURE;
+	}
+
+	c = in;
+	end = in + inlen;
+
+	/* Check padding type byte */
+	if (*c++ != 0x00) {
+		psTraceCrypto("pkcs1Unpad: bad first byte\n");
+		return PS_FAILURE;
+	}
+	if (*c++ != 0x02) {
+		psTraceCrypto("pkcs1Unpad: bad padding type\n");
+		return PS_FAILURE;
+	}
+
+	/* Skip padding string (non-zero bytes) until we find 0x00 */
+	while (c < end && *c != 0x00) {
+		c++;
+	}
+
+	if (c >= end) {
+		psTraceCrypto("pkcs1Unpad: no 0x00 separator found\n");
+		return PS_FAILURE;
+	}
+
+	/* Skip the 0x00 separator */
+	c++;
+
+	/* Calculate message length */
+	msglen = (uint32)(end - c);
+
+	if (msglen > outlen) {
+		psTraceCrypto("pkcs1Unpad: output buffer too small\n");
+		return PS_FAILURE;
+	}
+
+	/* Copy message to output */
+	memcpy(out, c, msglen);
+
+	return msglen;
+}
+
+/* RSA private key decryption (PKCS#1 v1.5)
+ * Decrypts with private key and removes PKCS#1 padding
+ */
+#define psRsaDecryptPriv(pool, key, in, inlen, out, outlen, data) \
+        psRsaDecryptPriv(      key, in, inlen, out, outlen)
+int32 FAST_FUNC psRsaDecryptPriv(psPool_t *pool, psRsaKey_t *key,
+						unsigned char *in, uint32 inlen,
+						unsigned char *out, uint32 outlen, void *data)
+{
+	int32 err;
+	uint32 size, ptLen;
+	unsigned char *tmp;
+
+	size = key->size;
+	if (inlen != size) {
+		psTraceCrypto("psRsaDecryptPriv: input size mismatch\n");
+		return PS_ARG_FAIL;
+	}
+
+	/* Allocate temp buffer for decrypted padded data */
+	tmp = xmalloc(size);
+
+	/* Perform RSA decryption */
+	ptLen = size;
+	if ((err = psRsaCrypt(pool, in, inlen, tmp, &ptLen, key,
+			PRIVKEY_TYPE, data)) < PS_SUCCESS) {
+		psTraceCrypto("Error performing psRsaDecryptPriv\n");
+		free(tmp);
+		return err;
+	}
+
+	/* Remove PKCS#1 padding */
+	err = pkcs1Unpad(tmp, ptLen, out, outlen);
+	free(tmp);
+
+	if (err < 0) {
+		psTraceCrypto("Error unpadding in psRsaDecryptPriv\n");
+		return PS_FAILURE;
+	}
+
+	return err;  /* Return length of unpadded message */
+}

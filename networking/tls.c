@@ -56,7 +56,7 @@
 #endif
 
 #if TLS_DEBUG
-# define dbg(...) fprintf(stderr, __VA_ARGS__)
+# define dbg(...) bb_error_msg(__VA_ARGS__)
 #else
 # define dbg(...) ((void)0)
 #endif
@@ -270,12 +270,34 @@ struct tls_handshake_data {
 /* HANDSHAKE HASH: */
 	//unsigned saved_client_hello_size;
 	//uint8_t saved_client_hello[1];
-};
 
+#if ENABLE_SSL_SERVER // || ENABLE_FEATURE_HTTPD_SSL
+	psRsaKey_t server_rsa_priv_key;
+	uint8_t   *server_cert_der;
+	size_t     server_cert_der_len;
+
+	///* For ECDHE: server's ephemeral EC private key */
+	//uint8_t ecc_priv_key32[32];
+#endif
+};
 
 static unsigned get24be(const uint8_t *p)
 {
 	return 0x100*(0x100*p[0] + p[1]) + p[2];
+}
+
+static int is_minor_version_valid(tls_state_t *tls, uint8_t minor_ver)
+{
+#if ENABLE_SSL_SERVER // || ENABLE_FEATURE_HTTPD_SSL
+	if (tls->expecting_first_packet == 1) {
+		tls->expecting_first_packet = 0;
+		/* First packet: accept TLS 1.0 (3.1) through TLS 1.3 (3.4)
+		 * for compatibility with clients using other record versions */
+		return (minor_ver > 0 && minor_ver <= 4);
+	}
+	/* Subsequent packets: must match negotiated version exactly */
+#endif
+	return minor_ver == TLS_MIN;
 }
 
 #if TLS_DEBUG
@@ -294,7 +316,7 @@ static void dump_hex(const char *fmt, const void *vp, int len)
 	const uint8_t *p = vp;
 
 	bin2hex(hexbuf, (void*)p, len)[0] = '\0';
-	dbg(fmt, hexbuf);
+	bb_error_msg(fmt, hexbuf);
 }
 
 static void dump_tls_record(const void *vp, int len)
@@ -796,6 +818,7 @@ static void xwrite_handshake_record(tls_state_t *tls, unsigned size)
 static void xwrite_and_update_handshake_hash(tls_state_t *tls, unsigned size)
 {
 	if (!(tls->flags & ENCRYPT_ON_WRITE)) {
+//always true!
 		uint8_t *buf;
 
 		xwrite_handshake_record(tls, size);
@@ -940,7 +963,7 @@ static int tls_xread_record(tls_state_t *tls, const char *expected)
 
 			if (target > MAX_INBUF /* malformed input (too long) */
 			 || xhdr->proto_maj != TLS_MAJ
-			 || xhdr->proto_min != TLS_MIN
+			 || !is_minor_version_valid(tls, xhdr->proto_min)
 			) {
 				sz = total < target ? total : target;
 				bad_record_die(tls, expected, sz);
@@ -1849,6 +1872,92 @@ static void send_empty_client_cert(tls_state_t *tls)
 	xwrite_and_update_handshake_hash(tls, sizeof(*record));
 }
 
+static void derive_master_secret_and_keys(tls_state_t *tls, uint8_t *premaster, int premaster_size)
+{
+	uint8_t tmp64[64];
+	// RFC 5246
+	// For all key exchange methods, the same algorithm is used to convert
+	// the pre_master_secret into the master_secret.  The pre_master_secret
+	// should be deleted from memory once the master_secret has been
+	// computed.
+	//      master_secret = PRF(pre_master_secret, "master secret",
+	//                          ClientHello.random + ServerHello.random)
+	//                          [0..47];
+	// The master secret is always exactly 48 bytes in length.  The length
+	// of the premaster secret will vary depending on key exchange method.
+	prf_hmac_sha256(/*tls,*/
+		tls->hsd->master_secret, sizeof(tls->hsd->master_secret),
+		premaster, premaster_size,
+		"master secret",
+		tls->hsd->client_and_server_rand32, sizeof(tls->hsd->client_and_server_rand32)
+	);
+	dump_hex("master secret:%s\n", tls->hsd->master_secret, sizeof(tls->hsd->master_secret));
+
+	// RFC 5246
+	// 6.3.  Key Calculation
+	//
+	// The Record Protocol requires an algorithm to generate keys required
+	// by the current connection state (see Appendix A.6) from the security
+	// parameters provided by the handshake protocol.
+	//
+	// The master secret is expanded into a sequence of secure bytes, which
+	// is then split to a client write MAC key, a server write MAC key, a
+	// client write encryption key, and a server write encryption key.  Each
+	// of these is generated from the byte sequence in that order.  Unused
+	// values are empty.  Some AEAD ciphers may additionally require a
+	// client write IV and a server write IV (see Section 6.2.3.3).
+	//
+	// When keys and MAC keys are generated, the master secret is used as an
+	// entropy source.
+	//
+	// To generate the key material, compute
+	//
+	//    key_block = PRF(SecurityParameters.master_secret,
+	//                    "key expansion",
+	//                    SecurityParameters.server_random +
+	//                    SecurityParameters.client_random);
+	//
+	// until enough output has been generated.  Then, the key_block is
+	// partitioned as follows:
+	//
+	//    client_write_MAC_key[SecurityParameters.mac_key_length]
+	//    server_write_MAC_key[SecurityParameters.mac_key_length]
+	//    client_write_key[SecurityParameters.enc_key_length]
+	//    server_write_key[SecurityParameters.enc_key_length]
+	//    client_write_IV[SecurityParameters.fixed_iv_length]
+	//    server_write_IV[SecurityParameters.fixed_iv_length]
+
+	/* make "server_rand32 + client_rand32" */
+	memcpy(&tmp64[0] , &tls->hsd->client_and_server_rand32[32], 32);
+	memcpy(&tmp64[32], &tls->hsd->client_and_server_rand32[0] , 32);
+
+	prf_hmac_sha256(/*tls,*/
+		tls->client_write_MAC_key, 2 * (tls->MAC_size + tls->key_size + tls->IV_size),
+		// also fills:
+		// server_write_MAC_key[]
+		// client_write_key[]
+		// server_write_key[]
+		// client_write_IV[]
+		// server_write_IV[]
+		tls->hsd->master_secret, sizeof(tls->hsd->master_secret),
+		"key expansion",
+		tmp64, 64
+	);
+	tls->client_write_key = tls->client_write_MAC_key + (2 * tls->MAC_size);
+	tls->server_write_key = tls->client_write_key + tls->key_size;
+	tls->client_write_IV = tls->server_write_key + tls->key_size;
+	tls->server_write_IV = tls->client_write_IV + tls->IV_size;
+	dump_hex("client_write_MAC_key:%s\n",
+		tls->client_write_MAC_key, tls->MAC_size
+	);
+	dump_hex("client_write_key:%s\n",
+		tls->client_write_key, tls->key_size
+	);
+	dump_hex("client_write_IV:%s\n",
+		tls->client_write_IV, tls->IV_size
+	);
+}
+
 static void send_client_key_exchange(tls_state_t *tls)
 {
 	struct client_key_exchange {
@@ -1928,97 +2037,14 @@ static void send_client_key_exchange(tls_state_t *tls)
 	dbg(">> CLIENT_KEY_EXCHANGE\n");
 	xwrite_and_update_handshake_hash(tls, len);
 
-	// RFC 5246
-	// For all key exchange methods, the same algorithm is used to convert
-	// the pre_master_secret into the master_secret.  The pre_master_secret
-	// should be deleted from memory once the master_secret has been
-	// computed.
-	//      master_secret = PRF(pre_master_secret, "master secret",
-	//                          ClientHello.random + ServerHello.random)
-	//                          [0..47];
-	// The master secret is always exactly 48 bytes in length.  The length
-	// of the premaster secret will vary depending on key exchange method.
-	prf_hmac_sha256(/*tls,*/
-		tls->hsd->master_secret, sizeof(tls->hsd->master_secret),
-		premaster, premaster_size,
-		"master secret",
-		tls->hsd->client_and_server_rand32, sizeof(tls->hsd->client_and_server_rand32)
-	);
-	dump_hex("master secret:%s\n", tls->hsd->master_secret, sizeof(tls->hsd->master_secret));
+	derive_master_secret_and_keys(tls, premaster, premaster_size);
 
-	// RFC 5246
-	// 6.3.  Key Calculation
-	//
-	// The Record Protocol requires an algorithm to generate keys required
-	// by the current connection state (see Appendix A.6) from the security
-	// parameters provided by the handshake protocol.
-	//
-	// The master secret is expanded into a sequence of secure bytes, which
-	// is then split to a client write MAC key, a server write MAC key, a
-	// client write encryption key, and a server write encryption key.  Each
-	// of these is generated from the byte sequence in that order.  Unused
-	// values are empty.  Some AEAD ciphers may additionally require a
-	// client write IV and a server write IV (see Section 6.2.3.3).
-	//
-	// When keys and MAC keys are generated, the master secret is used as an
-	// entropy source.
-	//
-	// To generate the key material, compute
-	//
-	//    key_block = PRF(SecurityParameters.master_secret,
-	//                    "key expansion",
-	//                    SecurityParameters.server_random +
-	//                    SecurityParameters.client_random);
-	//
-	// until enough output has been generated.  Then, the key_block is
-	// partitioned as follows:
-	//
-	//    client_write_MAC_key[SecurityParameters.mac_key_length]
-	//    server_write_MAC_key[SecurityParameters.mac_key_length]
-	//    client_write_key[SecurityParameters.enc_key_length]
-	//    server_write_key[SecurityParameters.enc_key_length]
-	//    client_write_IV[SecurityParameters.fixed_iv_length]
-	//    server_write_IV[SecurityParameters.fixed_iv_length]
+	aes_setkey(&tls->aes_decrypt, tls->server_write_key, tls->key_size);
+	aes_setkey(&tls->aes_encrypt, tls->client_write_key, tls->key_size);
 	{
-		uint8_t tmp64[64];
-
-		/* make "server_rand32 + client_rand32" */
-		memcpy(&tmp64[0] , &tls->hsd->client_and_server_rand32[32], 32);
-		memcpy(&tmp64[32], &tls->hsd->client_and_server_rand32[0] , 32);
-
-		prf_hmac_sha256(/*tls,*/
-			tls->client_write_MAC_key, 2 * (tls->MAC_size + tls->key_size + tls->IV_size),
-			// also fills:
-			// server_write_MAC_key[]
-			// client_write_key[]
-			// server_write_key[]
-			// client_write_IV[]
-			// server_write_IV[]
-			tls->hsd->master_secret, sizeof(tls->hsd->master_secret),
-			"key expansion",
-			tmp64, 64
-		);
-		tls->client_write_key = tls->client_write_MAC_key + (2 * tls->MAC_size);
-		tls->server_write_key = tls->client_write_key + tls->key_size;
-		tls->client_write_IV = tls->server_write_key + tls->key_size;
-		tls->server_write_IV = tls->client_write_IV + tls->IV_size;
-		dump_hex("client_write_MAC_key:%s\n",
-			tls->client_write_MAC_key, tls->MAC_size
-		);
-		dump_hex("client_write_key:%s\n",
-			tls->client_write_key, tls->key_size
-		);
-		dump_hex("client_write_IV:%s\n",
-			tls->client_write_IV, tls->IV_size
-		);
-
-		aes_setkey(&tls->aes_decrypt, tls->server_write_key, tls->key_size);
-		aes_setkey(&tls->aes_encrypt, tls->client_write_key, tls->key_size);
-		{
-			uint8_t iv[AES_BLOCK_SIZE];
-			memset(iv, 0, AES_BLOCK_SIZE);
-			aes_encrypt_one_block(&tls->aes_encrypt, iv, tls->H);
-		}
+		uint8_t iv[AES_BLOCK_SIZE];
+		memset(iv, 0, AES_BLOCK_SIZE);
+		aes_encrypt_one_block(&tls->aes_encrypt, iv, tls->H);
 	}
 }
 
@@ -2070,7 +2096,7 @@ static void send_change_cipher_spec(tls_state_t *tls)
 // suite.  Any cipher suite which does not explicitly specify
 // verify_data_length has a verify_data_length equal to 12.  This
 // includes all existing cipher suites.
-static void send_client_finished(tls_state_t *tls)
+static void send_finished(tls_state_t *tls, const char *msg_to_encrypt)
 {
 	struct finished {
 		uint8_t type;
@@ -2088,7 +2114,7 @@ static void send_client_finished(tls_state_t *tls)
 	prf_hmac_sha256(/*tls,*/
 		record->prf_result, sizeof(record->prf_result),
 		tls->hsd->master_secret, sizeof(tls->hsd->master_secret),
-		"client finished",
+		msg_to_encrypt,
 		handshake_hash, len
 	);
 	dump_hex("from secret: %s\n", tls->hsd->master_secret, sizeof(tls->hsd->master_secret));
@@ -2098,6 +2124,51 @@ static void send_client_finished(tls_state_t *tls)
 
 	dbg(">> FINISHED\n");
 	xwrite_encrypted(tls, sizeof(*record), RECORD_TYPE_HANDSHAKE);
+}
+
+/* Receive and process ChangeCipherSpec */
+static void get_change_cipher_spec(tls_state_t *tls)
+{
+	int len;
+
+	/* Get CHANGE_CIPHER_SPEC */
+	len = tls_xread_record(tls, "switch to encrypted traffic");
+	if (len != 1 || memcmp(tls->inbuf, rec_CHANGE_CIPHER_SPEC, 6) != 0)
+		bad_record_die(tls, "switch to encrypted traffic", len);
+	dbg("<< CHANGE_CIPHER_SPEC\n");
+
+	/* Enable decryption for incoming packets */
+	if (ALLOW_RSA_NULL_SHA256
+	 && tls->cipher_id == TLS_RSA_WITH_NULL_SHA256
+	) {
+		tls->min_encrypted_len_on_read = tls->MAC_size;
+	} else
+	if (!(tls->flags & ENCRYPTION_AESGCM)) {
+		unsigned mac_blocks = (unsigned)(TLS_MAC_SIZE(tls) + AES_BLOCK_SIZE-1) / AES_BLOCK_SIZE;
+		/* all incoming packets now should be encrypted and have
+		 * at least IV + (MAC padded to blocksize):
+		 */
+		tls->min_encrypted_len_on_read = AES_BLOCK_SIZE + (mac_blocks * AES_BLOCK_SIZE);
+	} else {
+		tls->min_encrypted_len_on_read = 8 + AES_BLOCK_SIZE;
+	}
+	dbg("min_encrypted_len_on_read: %u\n", tls->min_encrypted_len_on_read);
+}
+
+/* Receive encrypted Finished message */
+static void get_finished(tls_state_t *tls, const char *expected)
+{
+	int len;
+
+	len = tls_xread_record(tls, expected);
+	if (len < 4 || tls->inbuf[RECHDR_LEN] != HANDSHAKE_FINISHED)
+		bad_record_die(tls, expected, len);
+	dbg("<< FINISHED\n");
+
+	/* TODO: Verify the Finished message contents */
+	/* The Finished message contains verify_data which is:
+	 * PRF(master_secret, "client finished"/"server finished", SHA256(handshake_messages))
+	 */
 }
 
 void FAST_FUNC tls_handshake(tls_state_t *tls, const char *sni)
@@ -2190,36 +2261,15 @@ void FAST_FUNC tls_handshake(tls_state_t *tls, const char *sni)
 	/* from now on we should send encrypted */
 	/* tls->write_seq64_be = 0; - already is */
 	tls->flags |= ENCRYPT_ON_WRITE;
+//TODO: ENCRYPT_ON_WRITE is unused, remove
 
-	send_client_finished(tls);
+	send_finished(tls, "client finished");
 
-	/* Get CHANGE_CIPHER_SPEC */
-	len = tls_xread_record(tls, "switch to encrypted traffic");
-	if (len != 1 || memcmp(tls->inbuf, rec_CHANGE_CIPHER_SPEC, 6) != 0)
-		bad_record_die(tls, "switch to encrypted traffic", len);
-	dbg("<< CHANGE_CIPHER_SPEC\n");
-
-	if (ALLOW_RSA_NULL_SHA256
-	 && tls->cipher_id == TLS_RSA_WITH_NULL_SHA256
-	) {
-		tls->min_encrypted_len_on_read = tls->MAC_size;
-	} else
-	if (!(tls->flags & ENCRYPTION_AESGCM)) {
-		unsigned mac_blocks = (unsigned)(TLS_MAC_SIZE(tls) + AES_BLOCK_SIZE-1) / AES_BLOCK_SIZE;
-		/* all incoming packets now should be encrypted and have
-		 * at least IV + (MAC padded to blocksize):
-		 */
-		tls->min_encrypted_len_on_read = AES_BLOCK_SIZE + (mac_blocks * AES_BLOCK_SIZE);
-	} else {
-		tls->min_encrypted_len_on_read = 8 + AES_BLOCK_SIZE;
-	}
-	dbg("min_encrypted_len_on_read: %u\n", tls->min_encrypted_len_on_read);
+	get_change_cipher_spec(tls);
 
 	/* Get (encrypted) FINISHED from the server */
-	len = tls_xread_record(tls, "'server finished'");
-	if (len < 4 || tls->inbuf[RECHDR_LEN] != HANDSHAKE_FINISHED)
-		bad_record_die(tls, "'server finished'", len);
-	dbg("<< FINISHED\n");
+	get_finished(tls, "'server finished'");
+
 	/* application data can be sent/received */
 
 	/* free handshake data */
@@ -2371,11 +2421,383 @@ void FAST_FUNC tls_run_copy_loop(tls_state_t *tls, unsigned flags)
 
 /* =============== SERVER-SIDE CODE =============== */
 
+static void get_client_hello(tls_state_t *tls)
+{
+	struct client_hello {
+		uint8_t type;
+		uint8_t len24_hi, len24_mid, len24_lo;
+		uint8_t proto_maj, proto_min;
+		uint8_t rand32[32];
+		uint8_t session_id_len;
+		/* followed by session_id, cipher suites, compression methods, extensions */
+	};
+	struct client_hello *hp;
+	uint8_t *p;
+	unsigned cipher_list_len;
+	int len;
+
+	len = tls_xread_handshake_block(tls, sizeof(*hp));
+	/* NB: the recv'd block is already hashed by tls_xread_handshake_block() */
+	hp = (void*)(tls->inbuf + RECHDR_LEN);
+	if (hp->type != HANDSHAKE_CLIENT_HELLO
+	 || hp->len24_hi  != 0
+	 || hp->len24_mid != 0
+	 /* hp->len24_lo checked later */
+	 || hp->proto_maj != TLS_MAJ
+///?	 || hp->proto_min != TLS_MIN
+	) {
+		bad_record_die(tls, "'client hello'", len);
+	}
+	dbg("<< CLIENT_HELLO len:%d len24:%d\n", len, hp->len24_lo);
+
+	/* Save client random */
+	memcpy(tls->hsd->client_and_server_rand32, hp->rand32, 32);
+
+	/* Parse cipher suites to select one we support */
+	p = (uint8_t*)(hp + 1);
+
+	/* Skip session ID */
+	len -= RECHDR_LEN + sizeof(*hp);
+	if (len < hp->session_id_len) {
+		bb_simple_error_msg_and_die("malformed ClientHello");
+	}
+	p += hp->session_id_len;
+	len -= hp->session_id_len;
+
+	/* Parse cipher suite list */
+	if (len < 2) {
+		bb_simple_error_msg_and_die("malformed ClientHello");
+	}
+	cipher_list_len = (p[0] << 8) | p[1];
+	p += 2;
+	len -= 2;
+
+	if (len < cipher_list_len) {
+		bb_simple_error_msg_and_die("malformed ClientHello");
+	}
+
+//FIXME: proper cipher suite selection - see get_server_hello()
+	tls->cipher_id = TLS_RSA_WITH_AES_128_CBC_SHA256;
+	//tls->flags = 0; /* RSA mode, no ECDHE */
+	/* Set cipher parameters for TLS_RSA_WITH_AES_128_CBC_SHA256 (0x003C) */
+	tls->key_size = AES128_KEYSIZE;  /* 16 bytes */
+	tls->MAC_size = SHA256_OUTSIZE;  /* 32 bytes */
+	//tls->IV_size = 0; /* For CBC mode, IV is sent with each encrypted record */
+
+	dbg("Selected cipher: %04x\n", tls->cipher_id);
+}
+
+static void send_server_hello(tls_state_t *tls)
+{
+	struct server_hello {
+		uint8_t type;
+		uint8_t len24_hi, len24_mid, len24_lo;
+		uint8_t proto_maj, proto_min;
+		uint8_t rand32[32];
+		uint8_t session_id_len;
+		uint8_t cipherid_hi, cipherid_lo;
+		uint8_t comprtype;
+		uint8_t extensions_len_hi, extensions_len_lo;
+		/* extensions follow */
+		uint8_t ext_reneg_info[5];  /* ff 01 00 01 00 */
+	};
+	struct server_hello *record;
+
+	record = tls_get_zeroed_outbuf(tls, sizeof(*record));
+
+	fill_handshake_record_hdr(record, HANDSHAKE_SERVER_HELLO, sizeof(*record));
+
+	record->proto_maj = TLS_MAJ;
+	record->proto_min = TLS_MIN;
+
+	/* Generate server random */
+	tls_get_random(record->rand32, sizeof(record->rand32));
+	memcpy(tls->hsd->client_and_server_rand32 + 32, record->rand32, 32);
+
+	/* No session ID */
+	//record->session_id_len = 0;
+
+	/* Selected cipher suite */
+	record->cipherid_hi = tls->cipher_id >> 8;
+	record->cipherid_lo = tls->cipher_id & 0xff;
+
+	/* No compression */
+	//record->comprtype = 0;
+
+	/* Extensions */
+	//record->extensions_len_hi = 0;
+	record->extensions_len_lo = 5; /* length of renegotiation_info extension */
+
+	/* Renegotiation info extension (RFC 5746) */
+	record->ext_reneg_info[0] = 0xff;
+	record->ext_reneg_info[1] = 0x01; /* extension type */
+	//record->ext_reneg_info[2] = 0x00;
+	record->ext_reneg_info[3] = 0x01; /* extension data length: 1 byte */
+	//record->ext_reneg_info[4] = 0x00; /* renegotiation info length: 0 (no previous connection) */
+
+	dbg(">> SERVER_HELLO\n");
+	xwrite_and_update_handshake_hash(tls, sizeof(*record));
+}
+
+static void send_server_certificate(tls_state_t *tls)
+{
+	struct certificate_msg {
+		uint8_t type;
+		uint8_t len24_hi, len24_mid, len24_lo;
+		uint8_t cert_chain_len24_hi, cert_chain_len24_mid, cert_chain_len24_lo;
+		uint8_t cert1_len24_hi, cert1_len24_mid, cert1_len24_lo;
+		/* followed by certificate DER data */
+	};
+	struct certificate_msg *record;
+	unsigned total_len, cert_len, chain_len;
+
+	cert_len = tls->hsd->server_cert_der_len;
+	total_len = sizeof(*record) + cert_len;
+
+	record = tls_get_zeroed_outbuf(tls, total_len);
+	fill_handshake_record_hdr(record, HANDSHAKE_CERTIFICATE, total_len);
+
+	/* Certificate chain length (just one cert for now) */
+	chain_len = cert_len + 3; /* 3 bytes for cert length */
+	record->cert_chain_len24_hi = chain_len >> 16;
+	record->cert_chain_len24_mid = (chain_len >> 8) & 0xff;
+	record->cert_chain_len24_lo = chain_len & 0xff;
+
+	/* First certificate length */
+	record->cert1_len24_hi = cert_len >> 16;
+	record->cert1_len24_mid = (cert_len >> 8) & 0xff;
+	record->cert1_len24_lo = cert_len & 0xff;
+
+	/* Copy certificate DER data */
+	memcpy(record + 1, tls->hsd->server_cert_der, cert_len);
+
+	dbg(">> CERTIFICATE (len=%u)\n", cert_len);
+	xwrite_and_update_handshake_hash(tls, total_len);
+}
+
+static void send_server_hello_done(tls_state_t *tls)
+{
+	struct server_hello_done {
+		uint8_t type;
+		uint8_t len24_hi, len24_mid, len24_lo;
+	};
+	struct server_hello_done *record;
+
+	record = tls_get_zeroed_outbuf(tls, sizeof(*record));
+	record->type = HANDSHAKE_SERVER_HELLO_DONE;
+	/* length is 0 */
+
+	dbg(">> SERVER_HELLO_DONE\n");
+	xwrite_and_update_handshake_hash(tls, sizeof(*record));
+}
+
+/* Receive and process ClientKeyExchange */
+static void get_client_key_exchange(tls_state_t *tls)
+{
+	struct client_key_exchange {
+		uint8_t type;
+		uint8_t len24_hi, len24_mid, len24_lo;
+		uint8_t enckey_len_hi, enckey_len_lo; /* RSA encrypted premaster length */
+		/* followed by RSA encrypted premaster secret */
+	};
+	struct client_key_exchange *record;
+	uint8_t premaster[RSA_PREMASTER_SIZE];
+	int len, enckey_len;
+	uint8_t *encrypted_premaster;
+
+	len = tls_xread_handshake_block(tls, 64);
+	record = (void*)(tls->inbuf + RECHDR_LEN);
+
+	if (record->type != HANDSHAKE_CLIENT_KEY_EXCHANGE) {
+		bad_record_die(tls, "'client key exchange'", len);
+	}
+	dbg("<< CLIENT_KEY_EXCHANGE\n");
+
+	/* Get the length of the encrypted premaster secret */
+	enckey_len = (record->enckey_len_hi << 8) | record->enckey_len_lo;
+	dbg("enckey_len:%d len:%d\n", enckey_len, len);
+
+	if (enckey_len < 128 || enckey_len > 512) {
+		bb_simple_error_msg_and_die("bad encrypted premaster length");
+	}
+
+	encrypted_premaster = (uint8_t*)(record + 1);
+
+	/* Decrypt the premaster secret using server's private RSA key */
+	{
+		int32 ret;
+		uint32 premaster_len;
+
+		premaster_len = RSA_PREMASTER_SIZE;
+		ret = psRsaDecryptPriv(NULL, &tls->hsd->server_rsa_priv_key,
+		                       encrypted_premaster, enckey_len,
+		                       premaster, premaster_len, NULL);
+
+		if (ret != RSA_PREMASTER_SIZE) {
+			bb_error_msg_and_die("RSA decrypt failed or wrong premaster size: %d", ret);
+		}
+
+		dbg("Decrypted premaster secret (%d bytes)\n", ret);
+
+		/* Verify premaster format: should start with version 0x03 0x03 (TLS 1.2) */
+		if (premaster[0] != 0x03 || premaster[1] != 0x03) {
+			bb_simple_error_msg_and_die("bad premaster secret version");
+		}
+	}
+
+	derive_master_secret_and_keys(tls, premaster, RSA_PREMASTER_SIZE);
+
+	/* Server decrypts with client_write_key, encrypts with server_write_key */
+	aes_setkey(&tls->aes_decrypt, tls->client_write_key, tls->key_size);
+	aes_setkey(&tls->aes_encrypt, tls->server_write_key, tls->key_size);
+	{
+		uint8_t iv[AES_BLOCK_SIZE];
+		memset(iv, 0, AES_BLOCK_SIZE);
+		aes_encrypt_one_block(&tls->aes_encrypt, iv, tls->H);
+	}
+	dbg("Derived key block\n");
+}
+
+/* Load RSA private key from DER file (supports PKCS#8 or PKCS#1)
+ * PKCS#8 PrivateKeyInfo ::= SEQUENCE {
+ *   version         INTEGER,
+ *   algorithm       AlgorithmIdentifier,
+ *   privateKey      OCTET STRING  -- contains PKCS#1 RSAPrivateKey
+ * }
+ * PKCS#1 RSAPrivateKey ::= SEQUENCE {
+ *   version           INTEGER,  -- 0
+ *   modulus           INTEGER,  -- N
+ *   publicExponent    INTEGER,  -- e
+ *   privateExponent   INTEGER,  -- d
+ *   prime1            INTEGER,  -- p
+ *   prime2            INTEGER,  -- q
+ *   exponent1         INTEGER,  -- dP (d mod (p-1))
+ *   exponent2         INTEGER,  -- dQ (d mod (q-1))
+ *   coefficient       INTEGER   -- qP ((inverse of q) mod p)
+ * }
+ */
+static NOINLINE /* don't inline - large stack use */
+void load_rsa_priv_key(psRsaKey_t *key, const char *filename)
+{
+	uint8_t buf[4*1024]; /* DER key files are usually ~1kbyte */
+	ssize_t sz;
+	uint8_t *der, *end;
+
+	sz = open_read_close(filename, buf, sizeof(buf));
+	if (sz < 0)
+		bb_perror_msg_and_die("can't read '%s'", filename);
+
+	der = buf;
+	end = der + sz;
+
+	/* Enter the outer SEQUENCE */
+	der = enter_der_item(der, &end);
+
+	/* Check if this is PKCS#8 or PKCS#1 format
+	 * PKCS#8 starts with version 0 (02 01 00) followed by AlgorithmIdentifier (30 0d...)
+	 * PKCS#1 starts with version 0 (02 01 00) followed by modulus (02 82...)
+	 * We can distinguish by checking if the second element is a SEQUENCE (0x30) or INTEGER (0x02)
+	 */
+	der = skip_der_item(der, end); /* Skip version */
+
+	if (*der == 0x30) {
+		/* PKCS#8 format - skip AlgorithmIdentifier and enter OCTET STRING */
+		dbg("Detected PKCS#8 private key format\n");
+		der = skip_der_item(der, end); /* Skip AlgorithmIdentifier */
+		der = enter_der_item(der, &end); /* Enter OCTET STRING containing PKCS#1 key */
+		der = enter_der_item(der, &end); /* Enter the PKCS#1 SEQUENCE */
+		der = skip_der_item(der, end); /* Skip version again */
+	} else {
+		/* PKCS#1 format - we already skipped the version */
+		dbg("Detected PKCS#1 private key format\n");
+	}
+
+	/* Read the key components */
+	der_binary_to_pstm(&key->N, der, end);    /* modulus */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->e, der, end);    /* publicExponent */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->d, der, end);    /* privateExponent */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->p, der, end);    /* prime1 */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->q, der, end);    /* prime2 */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->dP, der, end);   /* exponent1 */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->dQ, der, end);   /* exponent2 */
+	der = skip_der_item(der, end);
+
+	der_binary_to_pstm(&key->qP, der, end);   /* coefficient */
+
+	key->size = pstm_unsigned_bin_size(&key->N);
+	key->optimized = 1; /* We have CRT parameters */
+
+	dbg("Loaded RSA private key, size:%d\n", key->size);
+}
+
 void FAST_FUNC tls_handshake_as_server(tls_state_t *tls,
 	const char *privkey_der_filename,
 	const char *cert_der_filename)
 {
-//TODO
-	exit(1 | !tls | !privkey_der_filename | !cert_der_filename);
+	dbg("Starting TLS server handshake\n");
+
+	/* Allocate handshake data */
+	tls->hsd = xzalloc(sizeof(*tls->hsd));
+
+	/* Load server private key */
+	tls->hsd->server_cert_der_len = 64*1024; /* sanity limit (don't load multi-megabyte "certificates") */
+	tls->hsd->server_cert_der = xmalloc_xopen_read_close(cert_der_filename, &tls->hsd->server_cert_der_len);
+
+	/* Load server certificate */
+	load_rsa_priv_key(&tls->hsd->server_rsa_priv_key, privkey_der_filename);
+	dbg("Loaded private key: %d bytes\n", tls->hsd->server_rsa_priv_key.size);
+
+	sha256_begin(&tls->hsd->handshake_hash_ctx);
+	tls->expecting_first_packet = 1;
+
+	/* Server handshake sequence (RSA mode):
+	 * 1. Receive ClientHello
+	 * 2. Send ServerHello
+	 * 3. Send Certificate
+	 * 4. [Send ServerKeyExchange] - only for DHE/ECDHE
+	 * 5. [Send CertificateRequest] - optional, skip for now
+	 * 6. Send ServerHelloDone
+	 * 7. Receive ClientKeyExchange
+	 * 8. Receive ChangeCipherSpec
+	 * 9. Receive Finished (encrypted)
+	 * 10. Send ChangeCipherSpec
+	 * 11. Send Finished (encrypted)
+	 */
+	get_client_hello(tls);
+	send_server_hello(tls);
+	send_server_certificate(tls);
+	send_server_hello_done(tls);
+
+	get_client_key_exchange(tls);
+	get_change_cipher_spec(tls);
+	/* Get (encrypted) FINISHED from the client */
+	get_finished(tls, "'cliend finished'");
+
+	send_change_cipher_spec(tls);
+	send_finished(tls, "server finished");
+
+	dbg("Server handshake complete\n");
+
+	/* application data can be sent/received */
+
+	/* free handshake data */
+	psRsaKey_clear(&tls->hsd->server_rsa_priv_key);
+	free(tls->hsd->server_cert_der);
+//	if (PARANOIA)
+//		memset(tls->hsd, 0, sizeof(*tls->hsd));
+	free(tls->hsd);
+	tls->hsd = NULL;
 }
 #endif
