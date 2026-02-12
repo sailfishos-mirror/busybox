@@ -14,9 +14,35 @@
 //kbuild:lib-$(CONFIG_SSL_SERVER) += ssl_server.o
 
 //usage:#define ssl_server_trivial_usage
-//usage:       "[-vv] -p PRIVKEY.der -c CERT.der PROG ARGS"
+//usage:       "-f PRIVKEY_CERT.pem PROG ARGS"
 //usage:#define ssl_server_full_usage ""
-
+//usage:       "Inetd-style TLS server\n"
+//usage:     "\n	-f PEMFILE	HAProxy-style CRT file"
+/*
+# Generate RSA key and certificate
+openssl req -x509 -newkey rsa:4096 \
+	-keyout $HOSTNAME-rsa.key \
+	-out $HOSTNAME-rsa.crt \
+	-sha256 -days 9999 -nodes \
+	-subj /CN=$HOSTNAME \
+	-addext "subjectAltName=DNS:$HOSTNAME"
+# Generate ECDSA key and certificate
+openssl genpkey -algorithm EC \
+	-pkeyopt ec_paramgen_curve:prime256v1 \
+	-out $HOSTNAME-ecdsa.key
+fopenssl req -new -x509 \
+        -key $HOSTNAME-ecdsa.key \
+        -out $HOSTNAME-ecdsa.crt \
+        -sha256 -days 9999 \
+        -subj "/CN=$HOSTNAME" \
+        -addext "subjectAltName=DNS:$HOSTNAME"
+# Concatenate all these files into PRIVKEY_CERT.pem
+{	cat $HOSTNAME-rsa.key
+	cat $HOSTNAME-rsa.crt
+	cat $HOSTNAME-ecdsa.key
+	cat $HOSTNAME-ecdsa.crt
+} >PRIVKEY_CERT.pem
+*/
 #include "libbb.h"
 
 /* TLS server applet.
@@ -42,18 +68,17 @@ int ssl_server_main(int argc UNUSED_PARAM, char **argv)
 	struct fd_pair from_prog;
 	pid_t pid;
 	tls_state_t *tls;
-	const char *privkey_in_der_format;
-	const char *cert_in_der_format;
+	const char *pem_file;
 	unsigned opt;
 
 	tls = new_tls_state();
 
 	/* "+": stop on first non-option */
-	opt = getopt32(argv, "+""vp:c:",
-		&privkey_in_der_format, &cert_in_der_format
+	opt = getopt32(argv, "+""vf:",
+		&pem_file
 	);
 	argv += optind;
-	if (!argv[0] || (opt >> 1) == 0)
+	if (!argv[0] || !(opt & 2))
 		bb_show_usage();
 
 	/* In inetd mode, stdin/stdout are the socket.
@@ -66,7 +91,7 @@ int ssl_server_main(int argc UNUSED_PARAM, char **argv)
 	tls->ofd = 4;
 
 	/* This can abort on errors */
-	tls_handshake_as_server(tls, privkey_in_der_format, cert_in_der_format);
+	tls_handshake_as_server(tls, pem_file);
 
 	/* Run PROG, wrap its data in TLS and I/O to socket */
 	xpiped_pair(to_prog);

@@ -189,6 +189,76 @@
 #define TLS_MAX_CRYPTBLOCK_SIZE 16
 #define TLS_MAX_OUTBUF          (1 << 14)
 
+/* Cipher suites we support, in preference order (best first) */
+#define NUM_CIPHERS (0 \
+	+ 4 * ENABLE_FEATURE_TLS_SHA1 \
+	+ ALLOW_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 \
+	+ ALLOW_ECDHE_RSA_WITH_AES_128_CBC_SHA256 \
+	+ ALLOW_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 \
+	+ ALLOW_ECDHE_RSA_WITH_AES_128_GCM_SHA256 \
+	+ 2 * ENABLE_FEATURE_TLS_SHA1 \
+	+ ALLOW_RSA_WITH_AES_128_CBC_SHA256 \
+	+ ALLOW_RSA_WITH_AES_256_CBC_SHA256 \
+	+ ALLOW_RSA_WITH_AES_128_GCM_SHA256 \
+	+ ALLOW_RSA_NULL_SHA256 \
+	)
+static const uint8_t client_hello_ciphers[] = {
+	0x00,2 * (1 + NUM_CIPHERS), //len16_be
+	0x00,0xFF, //not a cipher - TLS_EMPTY_RENEGOTIATION_INFO_SCSV
+	/* ^^^^^^ RFC 5746 Renegotiation Indication Extension - some servers will refuse to work with us otherwise */
+#if ENABLE_FEATURE_TLS_SHA1
+	0xC0,0x09, // 1 TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA - ok: wget https://is.gd/
+	0xC0,0x0A, // 2 TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA - ok: wget https://is.gd/
+	0xC0,0x13, // 3 TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-SHA
+	0xC0,0x14, // 4 TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA - ok: openssl s_server ... -cipher ECDHE-RSA-AES256-SHA (might fail with older openssl)
+//	0xC0,0x18, //   TLS_ECDH_anon_WITH_AES_128_CBC_SHA
+//	0xC0,0x19, //   TLS_ECDH_anon_WITH_AES_256_CBC_SHA
+#endif
+#if ALLOW_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256
+	0xC0,0x23, // 5 TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 - ok: wget https://is.gd/
+#endif
+//	0xC0,0x24, //   TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
+#if ALLOW_ECDHE_RSA_WITH_AES_128_CBC_SHA256
+	0xC0,0x27, // 6 TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-SHA256
+#endif
+//	0xC0,0x28, //   TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
+#if ALLOW_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
+	0xC0,0x2B, // 7 TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 - ok: wget https://is.gd/
+#endif
+//	0xC0,0x2C, //   TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 - wget https://is.gd/: "TLS error from peer (alert code 20): bad MAC"
+//TODO: GCM_SHA384 ciphers can be supported, only need sha384-based PRF?
+#if ALLOW_ECDHE_RSA_WITH_AES_128_GCM_SHA256
+	0xC0,0x2F, // 8 TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-GCM-SHA256
+#endif
+//	0xC0,0x30, //   TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 - openssl s_server ... -cipher ECDHE-RSA-AES256-GCM-SHA384: "decryption failed or bad record mac"
+//possibly these too:
+#if ENABLE_FEATURE_TLS_SHA1
+//	0xC0,0x35, //   TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA
+//	0xC0,0x36, //   TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA
+#endif
+//	0xC0,0x37, //   TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256
+//	0xC0,0x38, //   TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
+#if ENABLE_FEATURE_TLS_SHA1
+	0x00,0x2F, // 9 TLS_RSA_WITH_AES_128_CBC_SHA - ok: openssl s_server ... -cipher AES128-SHA
+	0x00,0x35, //10 TLS_RSA_WITH_AES_256_CBC_SHA - ok: openssl s_server ... -cipher AES256-SHA
+#endif
+#if ALLOW_RSA_WITH_AES_128_CBC_SHA256
+	0x00,0x3C, //11 TLS_RSA_WITH_AES_128_CBC_SHA256 - ok: openssl s_server ... -cipher AES128-SHA256
+#endif
+#if ALLOW_RSA_WITH_AES_256_CBC_SHA256
+	0x00,0x3D, //12 TLS_RSA_WITH_AES_256_CBC_SHA256 - ok: openssl s_server ... -cipher AES256-SHA256
+#endif
+#if ALLOW_RSA_WITH_AES_128_GCM_SHA256
+	0x00,0x9C, //13 TLS_RSA_WITH_AES_128_GCM_SHA256 - ok: openssl s_server ... -cipher AES128-GCM-SHA256
+#endif
+//	0x00,0x9D, //   TLS_RSA_WITH_AES_256_GCM_SHA384 - openssl s_server ... -cipher AES256-GCM-SHA384: "decryption failed or bad record mac"
+#if ALLOW_RSA_NULL_SHA256
+	0x00,0x3B, //   TLS_RSA_WITH_NULL_SHA256
+#endif
+	0x01,0x00, //not a cipher - comprtypes_len, comprtype
+};
+#define supported_ciphers (client_hello_ciphers + 4)
+
 enum {
 	AES128_KEYSIZE = 16,
 	AES256_KEYSIZE = 32,
@@ -246,6 +316,67 @@ enum {
 	ENCRYPTION_AESGCM      = 1 << 5, // else AES-SHA (or NULL-SHA if ALLOW_RSA_NULL_SHA256=1)
 };
 
+/* Note: return value matches KEY_RSA (0) / KEY_ECDSA (1) enum values */
+static int is_cipher_ECDSA(const uint8_t *cipherid)
+{
+	uint8_t cipher_lo;
+	if (cipherid[0] != 0xC0)
+		return 0;
+	/* ECDHE cipher - check if ECDSA or RSA */
+	cipher_lo = cipherid[1];
+	return  (cipher_lo == 0x09 || cipher_lo == 0x0A
+		|| cipher_lo == 0x23 || cipher_lo == 0x2B
+	);
+}
+
+/* Set cipher parameters based on selected cipher_id */
+static void set_cipher_parameters(tls_state_t *tls, const uint8_t *cipherid)
+{
+	uint8_t cipherid1 = cipherid[1];
+
+	tls->cipher_id = 0x100 * cipherid[0] + cipherid1;
+
+	/* Set defaults for RSA with AES-256 */
+	tls->key_size = AES256_KEYSIZE;
+	tls->MAC_size = SHA256_OUTSIZE;
+	tls->IV_size = 0;
+
+	if (cipherid[0] == 0xC0) {
+		/* All C0xx are ECDHE */
+		tls->flags |= NEED_EC_KEY;
+		if (cipherid1 & 1) {
+			/* Odd numbered C0xx use AES128 (even ones use AES256) */
+			tls->key_size = AES128_KEYSIZE;
+		}
+		if (ENABLE_FEATURE_TLS_SHA1 && cipherid1 <= 0x19) {
+			tls->MAC_size = SHA1_OUTSIZE;
+		} else
+		if (cipherid1 >= 0x2B && cipherid1 <= 0x30) {
+			/* C02B,2C,2F,30 are AES-GCM */
+			tls->flags |= ENCRYPTION_AESGCM;
+			tls->MAC_size = 0;
+			tls->IV_size = 4;
+		}
+	} else {
+		/* All 00xx are RSA */
+		if ((ENABLE_FEATURE_TLS_SHA1 && cipherid1 == 0x2F)
+		 || cipherid1 == 0x3C
+		 || cipherid1 == 0x9C
+		) {
+			tls->key_size = AES128_KEYSIZE;
+		}
+		if (ENABLE_FEATURE_TLS_SHA1 && cipherid1 <= 0x35) {
+			tls->MAC_size = SHA1_OUTSIZE;
+		} else
+		if (cipherid1 == 0x9C /*|| cipherid1 == 0x9D*/) {
+			/* 009C,9D are AES-GCM */
+			tls->flags |= ENCRYPTION_AESGCM;
+			tls->MAC_size = 0;
+			tls->IV_size = 4;
+		}
+	}
+}
+
 struct record_hdr {
 	uint8_t type;
 	uint8_t proto_maj, proto_min;
@@ -273,13 +404,21 @@ struct tls_handshake_data {
 	//uint8_t saved_client_hello[1];
 
 #if ENABLE_SSL_SERVER // || ENABLE_FEATURE_HTTPD_SSL
-	psRsaKey_t server_rsa_priv_key;
-	uint8_t   *server_cert_der;
-	size_t     server_cert_der_len;
+	/* Server certificate and key data */
+	char *keys[2];
+	char *certs[2];
+	unsigned keysize[2];
+	unsigned certsize[2];
+	int key_type_chosen;
+	psRsaKey_t rsa_priv_key;
 
 	///* For ECDHE: server's ephemeral EC private key */
 	//uint8_t ecc_priv_key32[32];
 #endif
+};
+enum {
+	KEY_RSA,
+	KEY_ECDSA,
 };
 
 static unsigned get24be(const uint8_t *p)
@@ -1403,73 +1542,6 @@ static void *get_outbuf_fill_handshake_record(tls_state_t *tls, unsigned type, u
 
 static void send_client_hello_and_alloc_hsd(tls_state_t *tls, const char *sni)
 {
-#define NUM_CIPHERS (0 \
-	+ 4 * ENABLE_FEATURE_TLS_SHA1 \
-	+ ALLOW_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 \
-	+ ALLOW_ECDHE_RSA_WITH_AES_128_CBC_SHA256 \
-	+ ALLOW_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 \
-	+ ALLOW_ECDHE_RSA_WITH_AES_128_GCM_SHA256 \
-	+ 2 * ENABLE_FEATURE_TLS_SHA1 \
-	+ ALLOW_RSA_WITH_AES_128_CBC_SHA256 \
-	+ ALLOW_RSA_WITH_AES_256_CBC_SHA256 \
-	+ ALLOW_RSA_WITH_AES_128_GCM_SHA256 \
-	+ ALLOW_RSA_NULL_SHA256 \
-	)
-	static const uint8_t ciphers[] = {
-		0x00,2 * (1 + NUM_CIPHERS), //len16_be
-		0x00,0xFF, //not a cipher - TLS_EMPTY_RENEGOTIATION_INFO_SCSV
-		/* ^^^^^^ RFC 5746 Renegotiation Indication Extension - some servers will refuse to work with us otherwise */
-#if ENABLE_FEATURE_TLS_SHA1
-		0xC0,0x09, // 1 TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA - ok: wget https://is.gd/
-		0xC0,0x0A, // 2 TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA - ok: wget https://is.gd/
-		0xC0,0x13, // 3 TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-SHA
-		0xC0,0x14, // 4 TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA - ok: openssl s_server ... -cipher ECDHE-RSA-AES256-SHA (might fail with older openssl)
-	//	0xC0,0x18, //   TLS_ECDH_anon_WITH_AES_128_CBC_SHA
-	//	0xC0,0x19, //   TLS_ECDH_anon_WITH_AES_256_CBC_SHA
-#endif
-#if ALLOW_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256
-		0xC0,0x23, // 5 TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 - ok: wget https://is.gd/
-#endif
-	//	0xC0,0x24, //   TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
-#if ALLOW_ECDHE_RSA_WITH_AES_128_CBC_SHA256
-		0xC0,0x27, // 6 TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-SHA256
-#endif
-	//	0xC0,0x28, //   TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
-#if ALLOW_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256
-		0xC0,0x2B, // 7 TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 - ok: wget https://is.gd/
-#endif
-	//	0xC0,0x2C, //   TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 - wget https://is.gd/: "TLS error from peer (alert code 20): bad MAC"
-//TODO: GCM_SHA384 ciphers can be supported, only need sha384-based PRF?
-#if ALLOW_ECDHE_RSA_WITH_AES_128_GCM_SHA256
-		0xC0,0x2F, // 8 TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-GCM-SHA256
-#endif
-	//	0xC0,0x30, //   TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 - openssl s_server ... -cipher ECDHE-RSA-AES256-GCM-SHA384: "decryption failed or bad record mac"
-	//possibly these too:
-#if ENABLE_FEATURE_TLS_SHA1
-	//	0xC0,0x35, //   TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA
-	//	0xC0,0x36, //   TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA
-#endif
-	//	0xC0,0x37, //   TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256
-	//	0xC0,0x38, //   TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
-#if ENABLE_FEATURE_TLS_SHA1
-		0x00,0x2F, // 9 TLS_RSA_WITH_AES_128_CBC_SHA - ok: openssl s_server ... -cipher AES128-SHA
-		0x00,0x35, //10 TLS_RSA_WITH_AES_256_CBC_SHA - ok: openssl s_server ... -cipher AES256-SHA
-#endif
-#if ALLOW_RSA_WITH_AES_128_CBC_SHA256
-		0x00,0x3C, //11 TLS_RSA_WITH_AES_128_CBC_SHA256 - ok: openssl s_server ... -cipher AES128-SHA256
-#endif
-#if ALLOW_RSA_WITH_AES_256_CBC_SHA256
-		0x00,0x3D, //12 TLS_RSA_WITH_AES_256_CBC_SHA256 - ok: openssl s_server ... -cipher AES256-SHA256
-#endif
-#if ALLOW_RSA_WITH_AES_128_GCM_SHA256
-		0x00,0x9C, //13 TLS_RSA_WITH_AES_128_GCM_SHA256 - ok: openssl s_server ... -cipher AES128-GCM-SHA256
-#endif
-	//	0x00,0x9D, //   TLS_RSA_WITH_AES_256_GCM_SHA384 - openssl s_server ... -cipher AES256-GCM-SHA384: "decryption failed or bad record mac"
-#if ALLOW_RSA_NULL_SHA256
-		0x00,0x3B, //   TLS_RSA_WITH_NULL_SHA256
-#endif
-		0x01,0x00, //not a cipher - comprtypes_len, comprtype
-	};
 	struct client_hello {
 		uint8_t type;
 		uint8_t len24_hi, len24_mid, len24_lo;
@@ -1556,8 +1628,8 @@ static void send_client_hello_and_alloc_hsd(tls_state_t *tls, const char *sni)
 		memset(record->rand32, 0x11, sizeof(record->rand32));
 	/* record->session_id_len = 0; - already is */
 
-	BUILD_BUG_ON(sizeof(ciphers) != 2 * (1 + 1 + NUM_CIPHERS + 1));
-	memcpy(&record->cipherid_len16_hi, ciphers, sizeof(ciphers));
+	BUILD_BUG_ON(sizeof(client_hello_ciphers) != 2 * (1 + 1 + NUM_CIPHERS + 1));
+	memcpy(&record->cipherid_len16_hi, client_hello_ciphers, sizeof(client_hello_ciphers));
 
 	ptr = (void*)(record + 1);
 	*ptr++ = ext_len >> 8;
@@ -1612,7 +1684,6 @@ static void get_server_hello(tls_state_t *tls)
 
 	struct server_hello *hp;
 	uint8_t *cipherid;
-	uint8_t cipherid1;
 	int len, len24;
 
 	len = tls_xread_handshake_block(tls, 74 - 32);
@@ -1651,74 +1722,7 @@ static void get_server_hello(tls_state_t *tls)
 
 	memcpy(tls->hsd->client_and_server_rand32 + 32, hp->rand32, sizeof(hp->rand32));
 
-	/* Set up encryption params based on selected cipher */
-#if 0
-		0xC0,0x09, // 1 TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA - ok: wget https://is.gd/
-		0xC0,0x0A, // 2 TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA - ok: wget https://is.gd/
-		0xC0,0x13, // 3 TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-SHA
-		0xC0,0x14, // 4 TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA - ok: openssl s_server ... -cipher ECDHE-RSA-AES256-SHA (might fail with older openssl)
-	//	0xC0,0x18, //   TLS_ECDH_anon_WITH_AES_128_CBC_SHA
-	//	0xC0,0x19, //   TLS_ECDH_anon_WITH_AES_256_CBC_SHA
-		0xC0,0x23, // 5 TLS_ECDHE_ECDSA_WITH_AES_128_CBC_SHA256 - ok: wget https://is.gd/
-	//	0xC0,0x24, //   TLS_ECDHE_ECDSA_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
-		0xC0,0x27, // 6 TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA256 - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-SHA256
-	//	0xC0,0x28, //   TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
-		0xC0,0x2B, // 7 TLS_ECDHE_ECDSA_WITH_AES_128_GCM_SHA256 - ok: wget https://is.gd/
-	//	0xC0,0x2C, //   TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384 - wget https://is.gd/: "TLS error from peer (alert code 20): bad MAC"
-		0xC0,0x2F, // 8 TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256 - ok: openssl s_server ... -cipher ECDHE-RSA-AES128-GCM-SHA256
-	//	0xC0,0x30, //   TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384 - openssl s_server ... -cipher ECDHE-RSA-AES256-GCM-SHA384: "decryption failed or bad record mac"
-	//possibly these too:
-	//	0xC0,0x35, //   TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA
-	//	0xC0,0x36, //   TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA
-	//	0xC0,0x37, //   TLS_ECDHE_PSK_WITH_AES_128_CBC_SHA256
-	//	0xC0,0x38, //   TLS_ECDHE_PSK_WITH_AES_256_CBC_SHA384 - can't do SHA384 yet
-		0x00,0x2F, // 9 TLS_RSA_WITH_AES_128_CBC_SHA - ok: openssl s_server ... -cipher AES128-SHA
-		0x00,0x35, //10 TLS_RSA_WITH_AES_256_CBC_SHA - ok: openssl s_server ... -cipher AES256-SHA
-		0x00,0x3C, //11 TLS_RSA_WITH_AES_128_CBC_SHA256 - ok: openssl s_server ... -cipher AES128-SHA256
-		0x00,0x3D, //12 TLS_RSA_WITH_AES_256_CBC_SHA256 - ok: openssl s_server ... -cipher AES256-SHA256
-		0x00,0x9C, //13 TLS_RSA_WITH_AES_128_GCM_SHA256 - ok: openssl s_server ... -cipher AES128-GCM-SHA256
-	//	0x00,0x9D, //   TLS_RSA_WITH_AES_256_GCM_SHA384 - openssl s_server ... -cipher AES256-GCM-SHA384: "decryption failed or bad record mac"
-		0x00,0x3B, //   TLS_RSA_WITH_NULL_SHA256
-#endif
-	cipherid1 = cipherid[1];
-	tls->cipher_id = 0x100 * cipherid[0] + cipherid1;
-	tls->key_size = AES256_KEYSIZE;
-	tls->MAC_size = SHA256_OUTSIZE;
-	/*tls->IV_size = 0; - already is */
-	if (cipherid[0] == 0xC0) {
-		/* All C0xx are ECDHE */
-		tls->flags |= NEED_EC_KEY;
-		if (cipherid1 & 1) {
-			/* Odd numbered C0xx use AES128 (even ones use AES256) */
-			tls->key_size = AES128_KEYSIZE;
-		}
-		if (ENABLE_FEATURE_TLS_SHA1 && cipherid1 <= 0x19) {
-			tls->MAC_size = SHA1_OUTSIZE;
-		} else
-		if (cipherid1 >= 0x2B && cipherid1 <= 0x30) {
-			/* C02B,2C,2F,30 are AES-GCM */
-			tls->flags |= ENCRYPTION_AESGCM;
-			tls->MAC_size = 0;
-			tls->IV_size = 4;
-		}
-	} else {
-		/* All 00xx are RSA */
-		if ((ENABLE_FEATURE_TLS_SHA1 && cipherid1 == 0x2F)
-		 || cipherid1 == 0x3C
-		 || cipherid1 == 0x9C
-		) {
-			tls->key_size = AES128_KEYSIZE;
-		}
-		if (ENABLE_FEATURE_TLS_SHA1 && cipherid1 <= 0x35) {
-			tls->MAC_size = SHA1_OUTSIZE;
-		} else
-		if (cipherid1 == 0x9C /*|| cipherid1 == 0x9D*/) {
-			/* 009C,9D are AES-GCM */
-			tls->flags |= ENCRYPTION_AESGCM;
-			tls->MAC_size = 0;
-			tls->IV_size = 4;
-		}
-	}
+	set_cipher_parameters(tls, cipherid);
 	dbg("server chose cipher %04x", tls->cipher_id);
 	dbg("key_size:%u MAC_size:%u IV_size:%u", tls->key_size, tls->MAC_size, tls->IV_size);
 
@@ -2424,6 +2428,7 @@ static void get_client_hello(tls_state_t *tls)
 		uint8_t session_id_len;
 		/* followed by session_id, cipher suites, compression methods, extensions */
 	};
+	unsigned i, j;
 	struct client_hello *hp;
 	uint8_t *p;
 	unsigned cipher_list_len;
@@ -2434,14 +2439,13 @@ static void get_client_hello(tls_state_t *tls)
 	hp = (void*)(tls->inbuf + RECHDR_LEN);
 	if (hp->type != HANDSHAKE_CLIENT_HELLO
 	 || hp->len24_hi  != 0
-	 || hp->len24_mid != 0
-	 /* hp->len24_lo checked later */
+	 /* hp->len24_mid,lo checked later */
 	 || hp->proto_maj != TLS_MAJ
 ///?	 || hp->proto_min != TLS_MIN
 	) {
 		bad_record_die(tls, "'client hello'", len);
 	}
-	dbg("<< CLIENT_HELLO len:%d len24:%d", len, hp->len24_lo);
+	dbg("<< CLIENT_HELLO len:%d len24:%d", len, (hp->len24_mid << 8) | hp->len24_lo);
 
 	/* Save client random */
 	memcpy(tls->hsd->client_and_server_rand32, hp->rand32, 32);
@@ -2469,15 +2473,49 @@ static void get_client_hello(tls_state_t *tls)
 		bb_simple_error_msg_and_die("malformed ClientHello");
 	}
 
-//FIXME: proper cipher suite selection - see get_server_hello()
-	tls->cipher_id = TLS_RSA_WITH_AES_128_CBC_SHA256;
-	//tls->flags = 0; /* RSA mode, no ECDHE */
-	/* Set cipher parameters for TLS_RSA_WITH_AES_128_CBC_SHA256 (0x003C) */
-	tls->key_size = AES128_KEYSIZE;  /* 16 bytes */
-	tls->MAC_size = SHA256_OUTSIZE;  /* 32 bytes */
-	//tls->IV_size = 0; /* For CBC mode, IV is sent with each encrypted record */
+	/* Select cipher + cert pair from client's list, preferring our ciphers in order */
+	for (i = 0; i < NUM_CIPHERS*2; i += 2) {
+		const uint8_t *our_cipher = &supported_ciphers[i];
+		int key_type;
 
-	dbg("Selected cipher: %04x", tls->cipher_id);
+		/* Skip all ECDHE ciphers (0xC0xx) - we don't support server-side ephemeral
+		 * EC key generation yet. ECDHE_RSA uses RSA certificates (which we have)
+		 * but still requires generating ephemeral EC keys for the key exchange.
+		 * We only support plain RSA key exchange (0x00xx) on the server side.
+		 */
+		if (our_cipher[0] == 0xC0) {
+			//TODO: implement server-side ECDHE
+			continue;
+		}
+
+		/* Determine required key type for this cipher */
+		key_type = is_cipher_ECDSA(our_cipher);
+		if (key_type == KEY_ECDSA) {
+			if (!tls->hsd->keys[KEY_ECDSA])
+				/* No ECDSA cert configured, can't choose this */
+				continue;
+			//TODO: ECDSA not supported yet at all
+			continue;
+		} else {
+			if (!tls->hsd->keys[KEY_RSA])
+				/* No RSA cert configured, can't choose this */
+				continue;
+			/* We _can_ choose this! */
+		}
+
+		/* Check if this cipher is in client's list */
+		for (j = 0; j < cipher_list_len; j += 2) {
+			if (p[j] == our_cipher[0] && p[j + 1] == our_cipher[1]) {
+				/* Found a match! */
+				set_cipher_parameters(tls, our_cipher);
+				dbg("Selected cipher: %04x", tls->cipher_id);
+				tls->hsd->key_type_chosen = key_type;
+				return;
+			}
+		}
+		/* try our next cipherid */
+	}
+	bb_simple_error_msg_and_die("no common cipher suites");
 }
 
 static void send_server_hello(tls_state_t *tls)
@@ -2510,7 +2548,7 @@ static void send_server_hello(tls_state_t *tls)
 
 	/* Selected cipher suite */
 	record->cipherid_hi = tls->cipher_id >> 8;
-	record->cipherid_lo = tls->cipher_id & 0xff;
+	record->cipherid_lo = tls->cipher_id; /* & 0xff implicit */
 
 	/* No compression */
 	//record->comprtype = 0;
@@ -2532,37 +2570,14 @@ static void send_server_hello(tls_state_t *tls)
 
 static void send_server_certificate(tls_state_t *tls)
 {
-	struct certificate_msg {
-		uint8_t type;
-		uint8_t len24_hi, len24_mid, len24_lo;
-		uint8_t cert_chain_len24_hi, cert_chain_len24_mid, cert_chain_len24_lo;
-		uint8_t cert1_len24_hi, cert1_len24_mid, cert1_len24_lo;
-		/* followed by certificate DER data */
-	};
-	struct certificate_msg *record;
-	unsigned total_len, cert_len, chain_len;
+	void *record;
+	int n = tls->hsd->key_type_chosen;
+	int sz = tls->hsd->certsize[n];
 
-	cert_len = tls->hsd->server_cert_der_len;
-	total_len = sizeof(*record) + cert_len;
-
-	record = get_outbuf_fill_handshake_record(tls, HANDSHAKE_CERTIFICATE, total_len);
-
-	/* Certificate chain length (just one cert for now) */
-	chain_len = cert_len + 3; /* 3 bytes for cert length */
-	record->cert_chain_len24_hi = chain_len >> 16;
-	record->cert_chain_len24_mid = (chain_len >> 8) & 0xff;
-	record->cert_chain_len24_lo = chain_len & 0xff;
-
-	/* First certificate length */
-	record->cert1_len24_hi = cert_len >> 16;
-	record->cert1_len24_mid = (cert_len >> 8) & 0xff;
-	record->cert1_len24_lo = cert_len & 0xff;
-
-	/* Copy certificate DER data */
-	memcpy(record + 1, tls->hsd->server_cert_der, cert_len);
-
-	dbg(">> CERTIFICATE (len=%u)", cert_len);
-	xwrite_and_update_handshake_hash(tls, total_len);
+	record = tls_get_outbuf(tls, sz);
+	memcpy(record, tls->hsd->certs[n], sz);
+	dbg(">> CERTIFICATE");
+	xwrite_and_update_handshake_hash(tls, sz);
 }
 
 static void send_server_hello_done(tls_state_t *tls)
@@ -2615,9 +2630,10 @@ static void get_client_key_exchange(tls_state_t *tls)
 	{
 		int32 ret;
 		uint32 premaster_len;
+		psRsaKey_t *key = &tls->hsd->rsa_priv_key;
 
 		premaster_len = RSA_PREMASTER_SIZE;
-		ret = psRsaDecryptPriv(NULL, &tls->hsd->server_rsa_priv_key,
+		ret = psRsaDecryptPriv(NULL, key,
 		                       encrypted_premaster, enckey_len,
 		                       premaster, premaster_len, NULL);
 
@@ -2665,15 +2681,9 @@ static void get_client_key_exchange(tls_state_t *tls)
  * }
  */
 static NOINLINE /* don't inline - large stack use */
-void load_rsa_priv_key(psRsaKey_t *key, const char *filename)
+void load_rsa_priv_key(psRsaKey_t *key, uint8_t *buf, ssize_t sz)
 {
-	uint8_t buf[4*1024]; /* DER key files are usually ~1kbyte */
-	ssize_t sz;
 	uint8_t *der, *end;
-
-	sz = open_read_close(filename, buf, sizeof(buf));
-	if (sz < 0)
-		bb_perror_msg_and_die("can't read '%s'", filename);
 
 	der = buf;
 	end = der + sz;
@@ -2690,15 +2700,12 @@ void load_rsa_priv_key(psRsaKey_t *key, const char *filename)
 
 	if (*der == 0x30) {
 		/* PKCS#8 format - skip AlgorithmIdentifier and enter OCTET STRING */
-		dbg("Detected PKCS#8 private key format");
 		der = skip_der_item(der, end); /* Skip AlgorithmIdentifier */
 		der = enter_der_item(der, &end); /* Enter OCTET STRING containing PKCS#1 key */
 		der = enter_der_item(der, &end); /* Enter the PKCS#1 SEQUENCE */
 		der = skip_der_item(der, end); /* Skip version again */
-	} else {
-		/* PKCS#1 format - we already skipped the version */
-		dbg("Detected PKCS#1 private key format");
 	}
+	/* else: PKCS#1 format - we already skipped the version */
 
 	/* Read the key components */
 	der_binary_to_pstm(&key->N, der, end);    /* modulus */
@@ -2726,26 +2733,203 @@ void load_rsa_priv_key(psRsaKey_t *key, const char *filename)
 
 	key->size = pstm_unsigned_bin_size(&key->N);
 	key->optimized = 1; /* We have CRT parameters */
+}
 
-	dbg("Loaded RSA private key, size:%d", key->size);
+static char *decode_base64_or_die(char *dst, const char *src)
+{
+	char *dst_end = decode_base64(dst, &src);
+	if (*src != '\0')
+		bb_error_msg_and_die("base64 decode error");
+	return dst_end;
+}
+
+/* Parse PEM file and extract key + cert chain pairs
+ * Returns number of pairs loaded
+ */
+static void load_pem_key_cert_pairs(tls_state_t *tls, const char *pem_filename)
+{
+	static const char BLOCK_NAMES[] ALIGN1 =
+		"EC PARAMETERS"  "\0"
+		"CERTIFICATE"    "\0"
+		"EC PRIVATE KEY" "\0"
+		"PRIVATE KEY"    "\0"
+		"RSA PRIVATE KEY""\0"
+	;
+	enum {
+		str_EC_PARAMETERS = 0,
+		str_CERTIFICATE = 1,
+		str_EC_KEY = 2,
+	};
+	char *p;
+	char *pem_data;
+	size_t pem_size;
+	char *der_data;
+	unsigned der_size;
+	int keyidx;
+
+	/* Read PEM file */
+	pem_size = 64 * 1024; /* sanity limit */
+	pem_data = xmalloc_xopen_read_close(pem_filename, &pem_size);
+
+	der_data = NULL;
+	der_size = 0;
+	keyidx = -1; /* "we did not see any KEY yet" */
+
+	p = pem_data;
+	while (1) {
+		unsigned n;
+		char *block_end;
+		char *block_type_end;
+
+		/* Find next PEM block */
+		p = skip_whitespace(p);
+		if (*p == '\0')
+			break; /* end of file */
+		p = is_prefixed_with(p, "-----BEGIN ");
+		if (!p)
+			goto err;
+		block_type_end = strstr(p, "-----\n");
+		if (!block_type_end)
+			goto err;
+		block_type_end += 5;
+		block_end = strstr(block_type_end, "\n-----END ");
+		if (!block_end)
+			goto err;
+		*block_end = '\0';
+		block_end += 10;
+//-----BEGIN PRIVATE KEY-----\n
+//           ^p              ^block_type_end
+//BASE64HERE-BASE64HERE
+//-----END PRIVATE KEY-----
+//         ^block_end
+		/* The headers must match */
+		*block_type_end = '\0';
+		if (!is_prefixed_with(block_end, p))
+			goto err;
+		/* Truncate trailing dashes from block type name */
+		block_type_end[-5] = '\0';
+
+		block_end += (block_type_end - p);
+		block_type_end++;
+//BASE64HERE-BASE64HERE
+//^block_type_end
+//-----END PRIVATE KEY-----
+//                         ^block_end
+		n = index_in_strings(BLOCK_NAMES, p);
+		if ((int)n < 0)
+			bb_error_msg_and_die("'%s': unknown PEM block '%s'", pem_filename, p);
+
+		/* Note: may point to "\n" or even NUL */
+		p = block_end;
+
+		/* What block do we see? */
+
+		if (n == str_EC_PARAMETERS) {
+			/* "openssl ecparam -genkey" generates these, skip silently */
+			continue; /* skip */
+		}
+
+		if (n == str_CERTIFICATE) {
+			struct certificate_msg {
+				uint8_t type;
+				uint8_t len24_hi, len24_mid, len24_lo;
+				uint8_t cert_chain_len24_hi, cert_chain_len24_mid, cert_chain_len24_lo;
+				uint8_t cert1_len24_hi, cert1_len24_mid, cert1_len24_lo;
+				/* followed by certificate DER data */
+				/* followed by cert2_len24, cert2 DER data, ... */
+			};
+			struct certificate_msg *cert_msg;
+			unsigned start;
+
+			if (keyidx < 0)
+				bb_error_msg_and_die("'%s': certificate must be after key", pem_filename);
+
+			/* We create or update a full HANDSHAKE_CERTIFICATE message */
+			if (der_size == 0) {
+				der_size = sizeof(*cert_msg);
+				der_data = xzalloc(der_size);
+				cert_msg = (void*)der_data;
+				cert_msg->type = HANDSHAKE_CERTIFICATE;
+			} else {
+				/* We are here when we decode second or later cert */
+				der_size += 3; /* for len24 */
+			}
+
+			/* Decode BASE64 */
+			start = der_size;
+			der_size += block_end - block_type_end; /* worst case size */
+			der_data = xrealloc(der_data, der_size);
+			der_size = decode_base64_or_die(der_data + start, block_type_end) - der_data;
+			der_data = xrealloc(der_data, der_size);
+
+			/* Fill last cert's len24 */
+			n = der_size - start;
+			der_data[start - 3] = n >> 16;
+			der_data[start - 2] = n >> 8;
+			der_data[start - 1] = n;
+			/* Update sizes in header */
+			cert_msg = (void*)der_data;
+			n = der_size - 4;
+			cert_msg->len24_hi  = n >> 16;
+			cert_msg->len24_mid = n >> 8;
+			cert_msg->len24_lo  = n;
+			n -= 3;
+			cert_msg->cert_chain_len24_hi  = n >> 16;
+			cert_msg->cert_chain_len24_mid = n >> 8;
+			cert_msg->cert_chain_len24_lo  = n;
+
+			tls->hsd->certs[keyidx] = der_data;
+			tls->hsd->certsize[keyidx] = der_size;
+			continue;
+		}
+
+		/* We see a key */
+
+		/* Decode BASE64 */
+		der_size = block_end - block_type_end; /* worst case size */
+		der_data = xmalloc(der_size);
+		der_size = decode_base64_or_die(der_data, block_type_end) - der_data;
+		der_data = xrealloc(der_data, der_size);
+
+		keyidx = (n == str_EC_KEY) ? KEY_ECDSA : KEY_RSA;
+		if (tls->hsd->keys[keyidx])
+			bb_error_msg_and_die("'%s': more than one key", pem_filename);
+		tls->hsd->keys[keyidx] = der_data;
+		tls->hsd->keysize[keyidx] = der_size;
+
+		der_data = NULL;
+		der_size = 0;
+	} /* while (parsing PEM) */
+	free(pem_data);
+
+	if (!tls->hsd->keys[KEY_RSA] && !tls->hsd->keys[KEY_ECDSA])
+		bb_error_msg_and_die("'%s': no private keys", pem_filename);
+
+	if (tls->hsd->keys[KEY_RSA]) {
+		if (!tls->hsd->certs[KEY_RSA])
+			bb_error_msg_and_die("'%s': key with no cert", pem_filename);
+		/* Parse RSA key from DER */
+		load_rsa_priv_key(&tls->hsd->rsa_priv_key, (uint8_t*)tls->hsd->keys[KEY_RSA], tls->hsd->keysize[KEY_RSA]);
+	}
+	if (tls->hsd->keys[KEY_ECDSA]) {
+		if (!tls->hsd->certs[KEY_ECDSA])
+			bb_error_msg_and_die("'%s': key with no cert", pem_filename);
+		bb_error_msg("'%s': ECDSA keys not supported", pem_filename);
+	}
+
+	return;
+ err:
+	bb_error_msg_and_die("malformed PEM file at '%.*s'", (int)(skip_whitespace(p) - p), p);
 }
 
 void FAST_FUNC tls_handshake_as_server(tls_state_t *tls,
-	const char *privkey_der_filename,
-	const char *cert_der_filename)
+	const char *pem_filename)
 {
-	dbg("Starting TLS server handshake");
-
 	/* Allocate handshake data */
 	tls->hsd = xzalloc(sizeof(*tls->hsd));
 
-	/* Load server private key */
-	tls->hsd->server_cert_der_len = 64*1024; /* sanity limit (don't load multi-megabyte "certificates") */
-	tls->hsd->server_cert_der = xmalloc_xopen_read_close(cert_der_filename, &tls->hsd->server_cert_der_len);
-
-	/* Load server certificate */
-	load_rsa_priv_key(&tls->hsd->server_rsa_priv_key, privkey_der_filename);
-	dbg("Loaded private key: %d bytes", tls->hsd->server_rsa_priv_key.size);
+	/* Load server key(s) and certificate(s) from PEM file */
+	load_pem_key_cert_pairs(tls, pem_filename);
 
 	sha256_begin(&tls->hsd->handshake_hash_ctx);
 	tls->expecting_first_packet = 1;
@@ -2776,13 +2960,14 @@ void FAST_FUNC tls_handshake_as_server(tls_state_t *tls,
 	send_change_cipher_spec(tls);
 	send_finished(tls, "server finished");
 
-	dbg("Server handshake complete");
-
 	/* application data can be sent/received */
 
 	/* free handshake data */
-	psRsaKey_clear(&tls->hsd->server_rsa_priv_key);
-	free(tls->hsd->server_cert_der);
+	psRsaKey_clear(&tls->hsd->rsa_priv_key);
+	free(tls->hsd->keys[0]);
+	free(tls->hsd->keys[1]);
+	free(tls->hsd->certs[0]);
+	free(tls->hsd->certs[1]);
 //	if (PARANOIA)
 //		memset(tls->hsd, 0, sizeof(*tls->hsd));
 	free(tls->hsd);
