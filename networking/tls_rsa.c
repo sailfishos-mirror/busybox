@@ -280,35 +280,23 @@ int32 FAST_FUNC psRsaDecryptPriv(psPool_t *pool, psRsaKey_t *key,
 						unsigned char *out, uint32 outlen, void *data)
 {
 	int32 err;
-	uint32 size, ptLen;
-	unsigned char *tmp;
+	uint32 ptLen;
 
-	size = key->size;
-	if (inlen != size) {
-		psTraceCrypto("psRsaDecryptPriv: input size mismatch\n");
+	if (inlen != key->size) {
+		psTraceCrypto("Error on bad inlen parameter to psRsaDecryptPriv\n");
 		return PS_ARG_FAIL;
 	}
-
-	/* Allocate temp buffer for decrypted padded data */
-	tmp = xmalloc(size);
-
-	/* Perform RSA decryption */
-	ptLen = size;
-	if ((err = psRsaCrypt(pool, in, inlen, tmp, &ptLen, key,
+	ptLen = inlen;
+	if ((err = psRsaCrypt(pool, in, inlen, in, &ptLen, key,
 			PRIVKEY_TYPE, data)) < PS_SUCCESS) {
 		psTraceCrypto("Error performing psRsaDecryptPriv\n");
-		free(tmp);
 		return err;
 	}
-
-	/* Remove PKCS#1 padding */
-	err = pkcs1Unpad(tmp, ptLen, out, outlen);
-	free(tmp);
-
-	if (err < 0) {
-		psTraceCrypto("Error unpadding in psRsaDecryptPriv\n");
+	if (ptLen != inlen) {
+		psTraceCrypto("Decrypted size error in psRsaDecryptPriv\n");
 		return PS_FAILURE;
 	}
-
-	return err;  /* Return length of unpadded message */
+	err = pkcs1Unpad(in, inlen, out, outlen);
+	memset(in, 0x0, inlen);
+	return err;
 }
