@@ -545,7 +545,7 @@ static uint64_t bb_getsize_in_512sect(int fd)
 #if ENABLE_FDISK_SUPPORT_LARGE_DISKS
 		off64_t sz = lseek64(fd, 0, SEEK_END);
 		if (sz == (off64_t)-1)
-			bb_perror_msg_and_die("lseek(%"OFF_FMT"u, %d)", 0, SEEK_END);
+			bb_perror_msg_and_die("lseek(%llu, %d)", 0ULL, SEEK_END);
 #else
 		off_t sz = xlseek(fd, 0, SEEK_END);
 #endif
